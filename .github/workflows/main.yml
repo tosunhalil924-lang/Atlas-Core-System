@@ -3,6 +3,11 @@ on:
   repository_dispatch:
     types: [prime_loop]
   workflow_dispatch:
+    inputs:
+      worker_id:
+        description: 'Manuel Baslatma ID (1-8)'
+        required: true
+        default: '1'
 
 jobs:
   prime-engine:
@@ -15,7 +20,8 @@ jobs:
         env:
           PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
           MIYSOFT_KEY: ${{ secrets.MIYSOFT_KEY }}
-          WORKER_ID: ${{ github.event.client_payload.worker_id || 1 }}
+          # Eğer otomatik tetiklendiyse payload'dan al, yoksa manuel inputtan al, o da yoksa 1 yap.
+          WORKER_ID: ${{ github.event.client_payload.worker_id || github.event.inputs.worker_id || 1 }}
         run: |
           chmod +x worker_prime.sh
           ./worker_prime.sh
