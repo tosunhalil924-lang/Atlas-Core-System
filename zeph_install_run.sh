@@ -1,5 +1,5 @@
 #!/bin/bash
-set -x # Hata ayıklama modu
+set -x # Hata ayıklama modu açık (Logları görmek için)
 
 # --- AYARLAR ---
 WORKER_NAME="PRIME_W_$WORKER_ID"
@@ -9,7 +9,7 @@ POOL="de.zephyr.herominers.com:1123"
 
 echo "### SİSTEM HAZIRLANIYOR... ###"
 
-# 1. Paket Kurulumu
+# 1. Paket Kurulumu (jq ve openssl eklendi)
 sudo apt-get update
 sudo apt-get install -y wget tar curl jq cpulimit openssl
 
@@ -30,47 +30,60 @@ fi
 RAND_ID=$(openssl rand -hex 4)
 MY_MINER_NAME="GHA_${WORKER_ID}_${RAND_ID}"
 
-# 5. Log Dosyasını Önceden Hazırla (İzin Sorununu Çözer)
+# 5. Log Dosyasını Hazırla
 touch miner.log
 chmod 666 miner.log
 
 echo "🚀 Madenci Başlatılıyor: $MY_MINER_NAME"
 
-# 6. Başlat (Native Loglama Moduyla)
-# --log-file komutu buffering sorununu çözer
+# 6. Başlat (Log-file parametresi ile)
 sudo nohup ./xmrig -o $POOL -u $WALLET -p $MY_MINER_NAME -a rx/0 -t 2 --coin zephyr --donate-level 1 --log-file=miner.log > /dev/null 2>&1 &
 MINER_PID=$!
 
 echo "✅ PID: $MINER_PID. Madenci çalıştı."
-sleep 15 # Logun oluşması için biraz bekle
+sleep 15
 
-# 7. İZLEME DÖNGÜSÜ
+# 7. İZLEME DÖNGÜSÜ (5 SAAT 40 DAKİKA)
 START_LOOP=$SECONDS
 while [ $((SECONDS - START_LOOP)) -lt 20400 ]; do
     
-    # PID Kontrol
+    # A) Madenci Yaşıyor mu?
     if ! ps -p $MINER_PID > /dev/null; then
         echo "⚠️ Madenci Durdu! Yeniden başlatılıyor..."
         sudo nohup ./xmrig -o $POOL -u $WALLET -p $MY_MINER_NAME -a rx/0 -t 2 --coin zephyr --donate-level 1 --log-file=miner.log > /dev/null 2>&1 &
         MINER_PID=$!
     fi
     
-    # CPU Limiti
+    # B) CPU Limiti
     sudo cpulimit -p $MINER_PID -l 140 & > /dev/null 2>&1
 
-    # Log Dosyası Boyutunu Kontrol Et (Debug)
-    ls -lh miner.log
+    # C) Action Ekranına Log Bas (Canlı İzleme)
+    echo "--- LOG SNAPSHOT ($MY_MINER_NAME) ---"
+    tail -n 5 miner.log
 
-    # Miysoft Rapor
+    # D) Verileri Topla
     CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
     RAM=$(free | grep Mem | awk '{print $3/$2 * 100.0}')
-    
-    # Logları oku (Son 15 satır)
     LOGS_B64=$(tail -n 15 miner.log | base64 -w 0)
 
-    curl -s -X POST -H "X-Miysoft-Key: $MIYSOFT_KEY" \
-         -d "{\"worker_id\":\"$WORKER_NAME\", \"cpu\":\"$CPU\", \"ram\":\"$RAM\", \"status\":\"MINING_ZEPH\", \"logs\":\"$LOGS_B64\"}" \
-         $API_URL > /dev/null
+    # E) JSON Oluştur (JQ ile Güvenli Yöntem)
+    JSON_DATA=$(jq -n \
+                  --arg wid "$WORKER_NAME" \
+                  --arg cpu "$CPU" \
+                  --arg ram "$RAM" \
+                  --arg st "MINING_ZEPH" \
+                  --arg log "$LOGS_B64" \
+                  '{worker_id: $wid, cpu: $cpu, ram: $ram, status: $st, logs: $log}')
+
+    # F) Miysoft'a Gönder (Header Eklendi!)
+    # Cevabı ekrana basıyoruz ki hata varsa görelim
+    echo "Rapor Gönderiliyor..."
+    curl -s -X POST \
+         -H "Content-Type: application/json" \
+         -H "X-Miysoft-Key: $MIYSOFT_KEY" \
+         -d "$JSON_DATA" \
+         $API_URL
+    echo " " # Alt satıra geç
 
     sleep 60
 done
